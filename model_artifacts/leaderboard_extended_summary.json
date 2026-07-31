@@ -1,0 +1,55 @@
+{
+  "best_by_validation": "WeightedEnsemble_L2",
+  "best_by_test": "RandomForest",
+  "leaderboard": [
+    {
+      "model": "RandomForest",
+      "score_test": 0.7509859997325812,
+      "score_val": 0.8526315789473684,
+      "pred_time_test": 0.5542073249816895,
+      "fit_time": 53.62725806236267
+    },
+    {
+      "model": "WeightedEnsemble_L2",
+      "score_test": 0.7471989852767245,
+      "score_val": 0.8909090909090909,
+      "pred_time_test": 1.8475170135498047,
+      "fit_time": 60.7126088142395
+    },
+    {
+      "model": "ExtraTrees",
+      "score_test": 0.7407352208927227,
+      "score_val": 0.8833333333333333,
+      "pred_time_test": 1.0972084999084473,
+      "fit_time": 6.958058834075928
+    },
+    {
+      "model": "LinearModel",
+      "score_test": 0.7160259087859905,
+      "score_val": 0.640408163265306,
+      "pred_time_test": 0.06271696090698242,
+      "fit_time": 0.7998266220092773
+    },
+    {
+      "model": "CatBoost",
+      "score_test": 0.6623203946865047,
+      "score_val": 0.7921568627450979,
+      "pred_time_test": 3.830507516860962,
+      "fit_time": 23.332149267196655
+    },
+    {
+      "model": "XGBoost",
+      "score_test": 0.6616655524721496,
+      "score_val": 0.7282828282828282,
+      "pred_time_test": 0.07955574989318848,
+      "fit_time": 2.2786829471588135
+    },
+    {
+      "model": "LightGBM",
+      "score_test": 0.6501045163367366,
+      "score_val": 0.7003998400639744,
+      "pred_time_test": 1.091815710067749,
+      "fit_time": 1.1254911422729492
+    }
+  ]
+}

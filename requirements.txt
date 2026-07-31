@@ -1,0 +1,9 @@
+streamlit>=1.30
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+xgboost>=2.0
+shap>=0.44
+plotly>=5.18
+statsmodels>=0.14
+autogluon.tabular>=1.0

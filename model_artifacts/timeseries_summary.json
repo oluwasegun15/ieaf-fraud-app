@@ -1,0 +1,62 @@
+{
+  "monthly": [
+    {
+      "month": "January 2025",
+      "transactions": 67847,
+      "fraud_count": 134,
+      "total_amount": 3389997.24,
+      "fraud_rate_pct": 0.19750320574233202
+    },
+    {
+      "month": "February 2025",
+      "transactions": 61334,
+      "fraud_count": 132,
+      "total_amount": 3067234.61,
+      "fraud_rate_pct": 0.21521505201030425
+    },
+    {
+      "month": "March 2025",
+      "transactions": 68206,
+      "fraud_count": 134,
+      "total_amount": 3410521.33,
+      "fraud_rate_pct": 0.19646365422396855
+    },
+    {
+      "month": "April 2025",
+      "transactions": 65570,
+      "fraud_count": 154,
+      "total_amount": 3271989.26,
+      "fraud_rate_pct": 0.23486350465151745
+    },
+    {
+      "month": "May 2025",
+      "transactions": 67618,
+      "fraud_count": 137,
+      "total_amount": 3370840.37,
+      "fraud_rate_pct": 0.20260877281197315
+    },
+    {
+      "month": "June 2025",
+      "transactions": 63526,
+      "fraud_count": 132,
+      "total_amount": 3173542.42,
+      "fraud_rate_pct": 0.20778893681327332
+    }
+  ],
+  "quarterly": [
+    {
+      "quarter": "Q1 2025",
+      "transactions": 197387,
+      "fraud_count": 400,
+      "fraud_rate_pct": 0.2026475907734552
+    },
+    {
+      "quarter": "Q2 2025",
+      "transactions": 196714,
+      "fraud_count": 423,
+      "fraud_rate_pct": 0.2150329920595382
+    }
+  ],
+  "trend_before_130": 0.22649076692454506,
+  "trend_after_130": 0.17464220297928346
+}

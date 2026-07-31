@@ -1,0 +1,77 @@
+{
+  "ag_best_model": "WeightedEnsemble_L2",
+  "ag_contemp_pr_auc": 0.7471989852767245,
+  "ag_contemp_precision": 1.0,
+  "ag_contemp_recall": 0.65625,
+  "ag_latency_p50_ms": 16.404751000038686,
+  "xgb_latency_p50_ms": 0.4047360000072331,
+  "xgb_pr_auc": 0.749202272145722,
+  "xgb_precision": 0.8214285714285714,
+  "xgb_recall": 0.71875,
+  "mcnemar_p": 0.18,
+  "leaderboard_test": [
+    {
+      "model": "RandomForest",
+      "score_test": 0.7509859997325812,
+      "score_val": 0.8526315789473684,
+      "pred_time_test": 0.5542073249816895,
+      "fit_time": 53.62725806236267
+    },
+    {
+      "model": "WeightedEnsemble_L2",
+      "score_test": 0.7471989852767245,
+      "score_val": 0.8909090909090909,
+      "pred_time_test": 1.8475170135498047,
+      "fit_time": 60.7126088142395
+    },
+    {
+      "model": "ExtraTrees",
+      "score_test": 0.7407352208927227,
+      "score_val": 0.8833333333333333,
+      "pred_time_test": 1.0972084999084473,
+      "fit_time": 6.958058834075928
+    },
+    {
+      "model": "LinearModel",
+      "score_test": 0.7160259087859905,
+      "score_val": 0.640408163265306,
+      "pred_time_test": 0.06271696090698242,
+      "fit_time": 0.7998266220092773
+    },
+    {
+      "model": "CatBoost",
+      "score_test": 0.6623203946865047,
+      "score_val": 0.7921568627450979,
+      "pred_time_test": 3.830507516860962,
+      "fit_time": 23.332149267196655
+    },
+    {
+      "model": "XGBoost",
+      "score_test": 0.6616655524721496,
+      "score_val": 0.7282828282828282,
+      "pred_time_test": 0.07955574989318848,
+      "fit_time": 2.2786829471588135
+    },
+    {
+      "model": "LightGBM",
+      "score_test": 0.6501045163367366,
+      "score_val": 0.7003998400639744,
+      "pred_time_test": 1.091815710067749,
+      "fit_time": 1.1254911422729492
+    }
+  ],
+  "best_by_test": "RandomForest",
+  "five_model_prauc": {
+    "LogisticRegression": 0.7469968761252725,
+    "RandomForest": 0.7507701569350318,
+    "XGBoost": 0.749202272145722,
+    "MLP_Temporal": 0.7287616649498032,
+    "AutoGluon": 0.7471989852767245
+  },
+  "adwin_recall_pre": 0.6458333333333333,
+  "adwin_recall_post": 0.2511210762331838,
+  "adwin_first_drift_day": 140.0,
+  "true_drift_day": 130,
+  "trend_before_130": 0.22649076692454506,
+  "trend_after_130": 0.17464220297928346
+}

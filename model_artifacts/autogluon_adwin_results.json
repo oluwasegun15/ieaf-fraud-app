@@ -1,0 +1,6 @@
+{
+  "recall_pre_drift": 0.6458333333333333,
+  "recall_post_drift": 0.2511210762331838,
+  "n_drift_signals": 1,
+  "first_drift_day": 140.0
+}
