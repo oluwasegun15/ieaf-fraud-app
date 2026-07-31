@@ -4,7 +4,16 @@ An improved version of the IEAF demonstration app. The biggest change: **predict
 through AutoGluon itself** — the framework's actual AutoML engine — not a single hand-picked model,
 so this app demonstrates the dissertation's AutoML pipeline working end to end.
 
-## What's new in v2
+## What's new in this version
+
+- **Pages now talk to each other.** Upload a file on the Upload page, and its results follow you:
+  - The **Dashboard** gains a "Your Uploaded Data (This Session)" section with live KPIs for your file, shown alongside (never replacing) the dissertation's own fixed Chapter Four results.
+  - The **AutoML Selection & Scorecards** page gains a live scorecard (precision, recall, F1, PR-AUC, MCC, confusion matrix) computed on your file — but only if it includes an `is_fraud` column, since those metrics need to know which transactions were really fraud.
+  - The **Manual Prediction** page pre-fills its behavioural fields (recent transaction counts, average amount) using your uploaded file's own averages, instead of generic starting numbers.
+  - A **sidebar status panel** shows whether a file is currently loaded this session, and a **"Clear uploaded data"** button resets everything back to the default view.
+- This uses Streamlit's `session_state`, which lives only in your browser session — nothing is saved to a shared database, and other visitors never see your uploaded data.
+
+## What's new in v2 (still included)
 
 - **AutoGluon does the scoring**, not XGBoost. The app loads the real, trained `TabularPredictor`
   and uses whichever model it automatically selected as best (`WeightedEnsemble_L2` in this run).

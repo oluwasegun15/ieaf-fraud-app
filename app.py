@@ -25,6 +25,8 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import shap
 from statsmodels.tsa.seasonal import seasonal_decompose
+from sklearn.metrics import (precision_score, recall_score, f1_score, roc_auc_score,
+                              average_precision_score, matthews_corrcoef, confusion_matrix, accuracy_score)
 
 from feature_engineering import engineer_features, engineer_single_transaction, FEATURE_COLS, RAW_REQUIRED_COLS
 
@@ -81,6 +83,40 @@ def ag_predict(feat_df: pd.DataFrame) -> np.ndarray:
     return predictor.predict_proba(feat_df[FEATURE_COLS])[1].values
 
 
+def compute_live_scorecard(y_true: np.ndarray, proba: np.ndarray) -> dict:
+    """Computes the same metrics used throughout Chapter Four (precision, recall, F1,
+    ROC-AUC, PR-AUC, MCC, false-positive rate, confusion matrix), but on whatever
+    labelled data was just uploaded, instead of the dissertation's own test set."""
+    pred = (proba >= 0.5).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, pred, labels=[0, 1]).ravel()
+    return dict(
+        accuracy=float(accuracy_score(y_true, pred)),
+        precision=float(precision_score(y_true, pred, zero_division=0)),
+        recall=float(recall_score(y_true, pred, zero_division=0)),
+        f1=float(f1_score(y_true, pred, zero_division=0)),
+        roc_auc=float(roc_auc_score(y_true, proba)) if len(set(y_true)) > 1 else float('nan'),
+        pr_auc=float(average_precision_score(y_true, proba)) if len(set(y_true)) > 1 else float('nan'),
+        mcc=float(matthews_corrcoef(y_true, pred)),
+        fpr=float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0,
+        tp=int(tp), fp=int(fp), tn=int(tn), fn=int(fn),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Session state: this is what lets an uploaded file's results follow the user
+# across pages (Dashboard, Scorecards, Manual Prediction), instead of each page
+# staying isolated to only what it shows on its own.
+# -----------------------------------------------------------------------------
+if 'has_uploaded' not in st.session_state:
+    st.session_state.has_uploaded = False
+    st.session_state.uploaded_filename = None
+    st.session_state.uploaded_feat_df = None      # engineered features + predictions
+    st.session_state.uploaded_raw_df = None        # original uploaded rows (for behavioural averages)
+    st.session_state.uploaded_summary = None       # dict of headline KPIs
+    st.session_state.uploaded_scorecard = None     # dict of precision/recall/etc, only if labels were present
+    st.session_state.uploaded_has_labels = False
+
+
 # -----------------------------------------------------------------------------
 # Sidebar
 # -----------------------------------------------------------------------------
@@ -99,6 +135,29 @@ st.sidebar.caption(
     'This app scores transactions using AutoGluon\u2019s own automatically-selected model, '
     'demonstrating the framework\u2019s AutoML pipeline end-to-end, exactly as built in Chapter Four.'
 )
+
+st.sidebar.markdown('---')
+if st.session_state.has_uploaded and st.session_state.uploaded_summary is not None:
+    st.sidebar.success(
+        f"📌 **Live session data**\n\n`{st.session_state.uploaded_filename}`\n\n"
+        f"{st.session_state.uploaded_summary['n_scored']:,} transactions scored"
+    )
+    st.sidebar.caption(
+        'This file\u2019s results now also appear on the Dashboard, AutoML Selection & Scorecards, '
+        'and Manual Prediction pages.'
+    )
+    if st.sidebar.button('🗑️ Clear uploaded data'):
+        st.session_state.has_uploaded = False
+        st.session_state.uploaded_filename = None
+        st.session_state.uploaded_feat_df = None
+        st.session_state.uploaded_raw_df = None
+        st.session_state.uploaded_summary = None
+        st.session_state.uploaded_scorecard = None
+        st.session_state.uploaded_has_labels = False
+        st.rerun()
+else:
+    st.sidebar.info('📌 No file uploaded yet this session. Upload one on the **Upload Dataset & Time-Series** '
+                      'page and its results will also appear on the other pages.')
 
 # =============================================================================
 # PAGE 1: DASHBOARD
@@ -173,6 +232,37 @@ if page == '📊 Dashboard':
             f"({dashboard_metrics['adwin_first_drift_day'] - dashboard_metrics['true_drift_day']:.0f}-day detection lag)"
         )
 
+    # -------------------------------------------------------------------------
+    # Live session section: only appears once a file has been uploaded. Kept
+    # clearly separate from the results above, which are the dissertation's own
+    # tested Chapter Four findings and do not change based on what you upload.
+    # -------------------------------------------------------------------------
+    if st.session_state.has_uploaded and st.session_state.uploaded_summary is not None:
+        st.markdown('---')
+        st.header('📌 Your Uploaded Data (This Session)')
+        st.caption(
+            f"From `{st.session_state.uploaded_filename}`, scored live with AutoGluon on the "
+            f"**Upload Dataset & Time-Series** page. The KPI cards above are Chapter Four's own "
+            f"tested results and do not change; these numbers are specific to your file."
+        )
+        s = st.session_state.uploaded_summary
+        u1, u2, u3, u4 = st.columns(4)
+        u1.metric('Your transactions scored', f"{s['n_scored']:,}")
+        u2.metric('Flagged (review or decline)', f"{s['n_flagged']:,}", f"{100*s['n_flagged']/s['n_scored']:.2f}% of your traffic")
+        u3.metric('Recommended decline', f"{s['n_decline']:,}")
+        u4.metric('Median fraud probability', f"{s['median_proba']:.4f}")
+
+        if st.session_state.uploaded_has_labels:
+            sc = st.session_state.uploaded_scorecard
+            st.markdown(
+                f"**Live scorecard on your data** (real fraud labels were found in this file): "
+                f"Precision **{sc['precision']:.3f}**, Recall **{sc['recall']:.3f}**, "
+                f"F1 **{sc['f1']:.3f}**, PR-AUC **{sc['pr_auc']:.3f}**, MCC **{sc['mcc']:.3f}**. "
+                f"See the **AutoML Selection & Scorecards** page for the full breakdown and confusion matrix."
+            )
+        else:
+            st.caption('Your file had no `is_fraud` column, so precision/recall cannot be computed — only counts and probabilities above.')
+
 # =============================================================================
 # PAGE 2: AUTOML SELECTION & SCORECARDS
 # =============================================================================
@@ -242,6 +332,46 @@ elif page == '🤖 AutoML Selection & Scorecards':
         fig.update_layout(height=260, margin=dict(l=5, r=5, t=30, b=5), title=dict(text=name, font=dict(size=11)))
         col.plotly_chart(fig, width='stretch')
 
+    # -------------------------------------------------------------------------
+    # Live scorecard for whatever was uploaded on the Upload page, if anything.
+    # Only possible when the uploaded file included real is_fraud labels —
+    # precision, recall, and a confusion matrix cannot be computed without them.
+    # -------------------------------------------------------------------------
+    if st.session_state.has_uploaded and st.session_state.uploaded_summary is not None:
+        st.markdown('---')
+        st.header('📌 Your Uploaded Data — Live Scorecard')
+        st.caption(f"Computed from `{st.session_state.uploaded_filename}`, using AutoGluon\u2019s predictions "
+                    f"from the Upload Dataset & Time-Series page.")
+        if st.session_state.uploaded_has_labels:
+            sc = st.session_state.uploaded_scorecard
+            live_df = pd.DataFrame([{
+                'Precision': sc['precision'], 'Recall': sc['recall'], 'F1': sc['f1'],
+                'ROC-AUC': sc['roc_auc'], 'PR-AUC': sc['pr_auc'], 'MCC': sc['mcc'], 'FPR (%)': 100 * sc['fpr'],
+            }], index=[st.session_state.uploaded_filename])
+            st.dataframe(
+                live_df.style.background_gradient(subset=['PR-AUC', 'MCC', 'F1'], cmap='Greens')
+                              .background_gradient(subset=['FPR (%)'], cmap='Reds')
+                              .format('{:.3f}'),
+                width='stretch',
+            )
+            cm = np.array([[sc['tn'], sc['fp']], [sc['fn'], sc['tp']]])
+            fig = go.Figure(go.Heatmap(z=cm, x=['Pred Legit', 'Pred Fraud'], y=['Actual Legit', 'Actual Fraud'],
+                                         colorscale='Purples', showscale=False, text=cm, texttemplate='%{text}'))
+            fig.update_layout(height=320, margin=dict(l=5, r=5, t=30, b=5),
+                                title=dict(text='Confusion Matrix — Your Data', font=dict(size=12)))
+            st.plotly_chart(fig, width='stretch')
+            st.caption(
+                'This is a genuine, freshly-computed scorecard on the file you uploaded, using the same '
+                'formulas as Chapter Four, not the dissertation\u2019s own fixed results shown above.'
+            )
+        else:
+            st.info(
+                f"Your uploaded file (`{st.session_state.uploaded_filename}`) has no `is_fraud` column, so "
+                "precision, recall, and a confusion matrix cannot be computed for it — those need to know "
+                "which transactions were really fraud. Upload a file with an `is_fraud` column (0 or 1) to "
+                "see a live scorecard here."
+            )
+
 # =============================================================================
 # PAGE 3: UPLOAD DATASET & TIME-SERIES
 # =============================================================================
@@ -293,7 +423,34 @@ elif page == '📁 Upload Dataset & Time-Series':
         n_flagged = int((proba >= DECISION_THRESHOLDS['approve_below']).sum())
         n_decline = int((proba >= DECISION_THRESHOLDS['decline_above']).sum())
 
+        # --- Save to session state so the Dashboard, Scorecards, and Manual ---
+        # --- Prediction pages can also reflect this file, not just this page ---
+        st.session_state.has_uploaded = True
+        st.session_state.uploaded_filename = uploaded.name
+        st.session_state.uploaded_feat_df = feat_df
+        st.session_state.uploaded_raw_df = raw_df
+        st.session_state.uploaded_summary = {
+            'n_scored': len(feat_df), 'n_flagged': n_flagged, 'n_decline': n_decline,
+            'median_proba': float(np.median(proba)), 'mean_proba': float(np.mean(proba)),
+        }
+        if 'is_fraud' in raw_df.columns and raw_df['is_fraud'].nunique() > 0:
+            st.session_state.uploaded_has_labels = True
+            st.session_state.uploaded_scorecard = compute_live_scorecard(
+                raw_df['is_fraud'].astype(int).values, proba)
+        else:
+            st.session_state.uploaded_has_labels = False
+            st.session_state.uploaded_scorecard = None
+
         st.markdown('### Scoring Results (AutoGluon)')
+        st.success(
+            f"✅ Saved to this session. These results now also appear on the **Dashboard**, "
+            f"**AutoML Selection & Scorecards**, and **Manual Prediction** pages."
+            + (" This file includes real fraud labels, so a genuine live scorecard "
+               "(precision, recall, confusion matrix) can be computed on it."
+               if st.session_state.uploaded_has_labels else
+               " This file has no `is_fraud` column, so a live scorecard can't be computed — "
+               "only prediction counts and probabilities.")
+        )
         m1, m2, m3, m4 = st.columns(4)
         m1.metric('Transactions scored', f'{len(feat_df):,}')
         m2.metric('Flagged for review or decline', f'{n_flagged:,}', f'{100*n_flagged/len(feat_df):.2f}% of traffic')
@@ -381,6 +538,22 @@ elif page == '✍️ Manual Prediction & Explainability':
     st.title('✍️ Score a Single Transaction')
     st.write('Enter transaction details below to get an instant fraud probability from AutoGluon and an explanation of why.')
 
+    # Default values for the behavioural fields: if a file has been uploaded this
+    # session, use its own average account behaviour as smarter starting points,
+    # instead of generic hardcoded numbers.
+    defaults = {'txn_count_1d': 1, 'txn_count_7d': 6, 'txn_count_30d': 24,
+                'amount_mean_7d': 60.0, 'amount_std_7d': 25.0, 'time_since_last_txn_h': 8.0}
+    if st.session_state.has_uploaded and st.session_state.uploaded_feat_df is not None:
+        fdf = st.session_state.uploaded_feat_df
+        for key in defaults:
+            if key in fdf.columns and fdf[key].notna().any():
+                defaults[key] = float(fdf[key].mean())
+        st.info(
+            f"ℹ️ The behavioural defaults below (transaction counts, average amount) have been updated "
+            f"using the average account behaviour found in `{st.session_state.uploaded_filename}`, "
+            f"instead of generic starting values. Change any of them freely before scoring."
+        )
+
     with st.form('manual_form'):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -394,14 +567,19 @@ elif page == '✍️ Manual Prediction & Explainability':
                 ['grocery', 'electronics', 'travel', 'restaurant', 'fuel', 'online_retail',
                  'utilities', 'entertainment', 'jewelry', 'cash_advance'])
             channel = st.selectbox('Channel', ['pos', 'online', 'mobile', 'atm'])
-            txn_count_1d = st.number_input('Transactions in the last 1 day (this account)', min_value=0, value=1)
-            txn_count_7d = st.number_input('Transactions in the last 7 days (this account)', min_value=0, value=6)
+            txn_count_1d = st.number_input('Transactions in the last 1 day (this account)', min_value=0,
+                                             value=round(defaults['txn_count_1d']))
+            txn_count_7d = st.number_input('Transactions in the last 7 days (this account)', min_value=0,
+                                             value=round(defaults['txn_count_7d']))
         with c3:
-            txn_count_30d = st.number_input('Transactions in the last 30 days (this account)', min_value=0, value=24)
-            amount_mean_7d = st.number_input('Average amount, last 7 days ($)', min_value=0.0, value=60.0)
-            amount_std_7d = st.number_input('Std. dev. of amount, last 7 days ($)', min_value=0.0, value=25.0)
+            txn_count_30d = st.number_input('Transactions in the last 30 days (this account)', min_value=0,
+                                              value=round(defaults['txn_count_30d']))
+            amount_mean_7d = st.number_input('Average amount, last 7 days ($)', min_value=0.0,
+                                               value=round(defaults['amount_mean_7d'], 2))
+            amount_std_7d = st.number_input('Std. dev. of amount, last 7 days ($)', min_value=0.0,
+                                              value=round(defaults['amount_std_7d'], 2))
             time_since_last_txn_h = st.number_input('Hours since this account\'s last transaction',
-                                                       min_value=0.0, value=8.0)
+                                                       min_value=0.0, value=round(defaults['time_since_last_txn_h'], 2))
         submitted = st.form_submit_button('🔍 Score This Transaction With AutoGluon', width='stretch')
 
     if submitted:
@@ -472,14 +650,24 @@ automatically-selected model** (currently `{predictor.model_best}`), showcasing 
 pipeline end to end rather than a single hand-picked model.
 
 **What each page does:**
-- **Dashboard** — the same live view shown in Chapter Four, built from real, computed results.
+- **Dashboard** — the same live view shown in Chapter Four, built from real, computed results. Once you upload a file, a second section appears below showing live KPIs for your own data.
 - **AutoML Selection & Scorecards** — shows exactly which models AutoGluon tried, which one it picked
   and why, and gives full performance scorecards and confusion matrices for every candidate model.
+  If you've uploaded a labelled file (with an `is_fraud` column), a live scorecard for your own data
+  appears here too.
 - **Upload Dataset & Time-Series** — score a CSV of transactions in batch with AutoGluon, and (if your
   file has a timestamp column) see daily volume, fraud-rate trends, and a full seasonal decomposition,
-  the same time-series method used in Chapter Four.
+  the same time-series method used in Chapter Four. Results here are also saved for the session and
+  reused on the other pages.
 - **Manual Prediction & Explainability** — score one transaction at a time and see a real SHAP
-  explanation for AutoGluon's decision.
+  explanation for AutoGluon's decision. If you've uploaded a file, the behavioural defaults (recent
+  transaction counts, average amount) are pre-filled from your own data's averages.
+
+**How pages share data:** uploading a file on the Upload page saves its results to your browser
+session (not a database, and not shared with other visitors). The Dashboard, Scorecards, and Manual
+Prediction pages then check for that saved data and show an extra, clearly-labelled section built
+from it, alongside, never replacing, the dissertation's own fixed Chapter Four results. Use the
+"Clear uploaded data" button in the sidebar to reset at any time.
 
 **An honest trade-off, shown on purpose:** AutoGluon is about 40x slower per transaction than a single
 tuned XGBoost model, for statistically indistinguishable accuracy (Chapter Four, Section 4.13). This app
