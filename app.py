@@ -267,7 +267,9 @@ if page == '📊 Dashboard':
         u1.metric('Your transactions scored', f"{s['n_scored']:,}")
         u2.metric('Flagged (review or decline)', f"{s['n_flagged']:,}", f"{100*s['n_flagged']/s['n_scored']:.2f}% of your traffic")
         u3.metric('Recommended decline', f"{s['n_decline']:,}")
-        u4.metric('Median fraud probability', f"{s['median_proba']:.4f}")
+        u4.metric('Highest fraud probability found', f"{s['max_proba']:.1%}",
+                   help='The median is almost always 0.0000 here, since most transactions get an exact-zero '
+                        'score — the highest score found is a more useful single number.')
 
         if st.session_state.uploaded_has_labels:
             sc = st.session_state.uploaded_scorecard
@@ -449,6 +451,7 @@ elif page == '📁 Upload Dataset & Time-Series':
         st.session_state.uploaded_summary = {
             'n_scored': len(feat_df), 'n_flagged': n_flagged, 'n_decline': n_decline,
             'median_proba': float(np.median(proba)), 'mean_proba': float(np.mean(proba)),
+            'max_proba': float(np.max(proba)),
         }
         if 'is_fraud' in raw_df.columns and raw_df['is_fraud'].nunique() > 0:
             st.session_state.uploaded_has_labels = True
@@ -472,7 +475,10 @@ elif page == '📁 Upload Dataset & Time-Series':
         m1.metric('Transactions scored', f'{len(feat_df):,}')
         m2.metric('Flagged for review or decline', f'{n_flagged:,}', f'{100*n_flagged/len(feat_df):.2f}% of traffic')
         m3.metric('Recommended decline', f'{n_decline:,}')
-        m4.metric('Median fraud probability', f'{np.median(proba):.4f}')
+        m4.metric('Highest fraud probability found', f'{np.max(proba):.1%}',
+                   help='The median is almost always 0.0000 here, since AutoGluon assigns exactly 0 to the '
+                        'great majority of transactions given how rare fraud is — the highest score found is '
+                        'a far more useful single number to look at.')
 
         c1, c2 = st.columns(2)
         with c1:
