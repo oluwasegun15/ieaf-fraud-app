@@ -549,8 +549,8 @@ def build_confidence_limitations():
     }
 
 
-def build_business_impact():
-    return [
+def build_business_impact(has_session=False, session_summary=None, profile=None):
+    impact = [
         {'icon': '🧭', 'title': 'Better decision-making',
          'text': 'A live scorecard and explanation for every prediction means a fraud analyst or manager can see not just a score, but why, supporting faster, more confident decisions.'},
         {'icon': '⚙️', 'title': 'Operational efficiency',
@@ -562,6 +562,19 @@ def build_business_impact():
         {'icon': '💡', 'title': 'Strategic opportunity',
          'text': 'A framework that explains itself is easier to bring to a regulator, an auditor, or a customer dispute than a black-box score alone.'},
     ]
+    if has_session and session_summary is not None:
+        n = session_summary['n_scored']
+        flagged = session_summary['n_flagged']
+        amount_note = ''
+        if profile is not None and profile.get('amount_flagged_mean') is not None:
+            est_value = profile['amount_flagged_mean'] * flagged
+            amount_note = f", representing roughly ${est_value:,.0f} in transaction value at the average flagged amount"
+        impact.append({
+            'icon': '📌', 'title': 'Direct impact on the file you just uploaded',
+            'text': f"Scoring {n:,} transactions flagged {flagged:,} for review or decline{amount_note} — "
+                     f"work that would otherwise depend on someone manually reviewing every single transaction."
+        })
+    return impact
 
 
 def build_next_steps():

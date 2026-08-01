@@ -24,12 +24,41 @@ the order they came up:
    with `autogluon.tabular==1.5.0` directly contradicted each other, since AutoGluon 1.5.0 requires
    `pyarrow<21.0.0`. **Fix:** removed the now-unnecessary `pyarrow>=21` pin entirely, since Python is
    pinned to 3.11 via Settings now, so any `pyarrow` version AutoGluon wants has a ready-built wheel.
+5. **`AttributeError: 'LogisticRegression' object has no attribute 'multi_class'`.** The manually-tuned
+   `LogisticRegression` model, pickled with a different scikit-learn version than the one installed
+   here, crashed on `predict_proba()`. Not a `requirements.txt` issue — a stale model file. **Fix:**
+   retrained it (and the other two small manual models, as a precaution) fresh, with the original
+   documented hyperparameters, against the currently-installed library versions.
 
 **The `requirements.txt` in this version is unchanged from the last working one** — nothing about the
 Executive Summary & Insights page needed a new package, deliberately, to avoid reopening any of the
 above.
 
 ## What's new in this version
+
+- **The Dashboard page is now genuinely live, and clearly labelled about what is and isn't.** Upload a
+  file, and a "Your Uploaded Data (This Session) — Live" section now appears at the *top* of the
+  Dashboard — computed fresh on every page load, not cached. It includes a real, live PR-AUC
+  comparison across every model small enough to ship with this app (AutoGluon, Logistic Regression,
+  XGBoost, MLP), and a dependency-free drift check comparing model recall between the first and
+  second half of your file's date range. The dissertation's own fixed Chapter Four results are still
+  shown below, now explicitly labelled "Chapter Four Reference Benchmark (Fixed)" so there's no
+  ambiguity about what changes with your data and what doesn't.
+- **A real bug, caught by testing, not shipped.** The originally-saved `LogisticRegression` model
+  crashed on `predict_proba()` due to a scikit-learn version incompatibility between when it was
+  pickled and the version installed here — a real, would-have-shipped bug that only surfaced when
+  actually testing multi-model live scoring, not just checking that pages loaded without error. Fixed
+  by retraining all three small manual models fresh, with their original documented hyperparameters
+  and the same training data, against the currently-installed library versions.
+- **RandomForest is deliberately excluded from live scoring.** Its saved model file is 25.7 MB — over
+  GitHub's web-upload limit, the same constraint that forced the original `all_fitted_models.pkl`
+  (27 MB combined) to be removed earlier. Its fixed Chapter Four score is still shown for reference on
+  every page; it just can't be re-run on your own uploaded data. This is stated directly in the app
+  wherever relevant, not left unexplained.
+- **The AutoML Selection & Scorecards page's live section now compares every available model** on
+  your uploaded data (previously AutoGluon only), with matching confusion matrices.
+
+## What's new in the version before this
 
 - **New page: Executive Summary & Insights, now genuinely reactive to your uploaded data.** Positioned
   right before About in the navigation. Every one of its 7 sections computes fresh statistics from

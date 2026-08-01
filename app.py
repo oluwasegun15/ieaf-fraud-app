@@ -48,11 +48,23 @@ def load_autogluon():
 
 @st.cache_resource
 def load_other_models():
-    with open(ART / 'xgb_model.pkl', 'rb') as f:
-        xgb_model = pickle.load(f)
+    """Loads the scaler plus the three manual comparison models small enough to
+    ship with the app (LogisticRegression, XGBoost, MLP_Temporal — all under
+    250KB). RandomForest is deliberately excluded: at 25.68MB it exceeds
+    GitHub's web-upload limit, the same problem worked through earlier when the
+    combined all_fitted_models.pkl (27MB) had to be removed. Its fixed,
+    historical Chapter Four score is still shown for reference; it just can't
+    be re-run live on whatever you upload."""
     with open(ART / 'scaler.pkl', 'rb') as f:
         scaler = pickle.load(f)
-    return xgb_model, scaler
+    manual_models = {}
+    manual_dir = ART / 'manual_models'
+    for name in ['LogisticRegression', 'XGBoost', 'MLP_Temporal']:
+        path = manual_dir / f'{name}.pkl'
+        if path.exists():
+            with open(path, 'rb') as f:
+                manual_models[name] = pickle.load(f)
+    return scaler, manual_models
 
 
 @st.cache_data
@@ -62,7 +74,7 @@ def load_json(name):
 
 
 predictor = load_autogluon()
-xgb_model, scaler = load_other_models()
+scaler, manual_models = load_other_models()
 dashboard_metrics = load_json('dashboard_metrics.json')
 ag_results = load_json('autogluon_results.json')
 model_results = load_json('model_results.json')
@@ -82,6 +94,19 @@ def decision_label(p: float) -> str:
 def ag_predict(feat_df: pd.DataFrame) -> np.ndarray:
     """Scores a dataframe of engineered features using AutoGluon's chosen best model."""
     return predictor.predict_proba(feat_df[FEATURE_COLS])[1].values
+
+
+def score_with_all_models(feat_df: pd.DataFrame) -> dict:
+    """Scores the same uploaded, engineered data with AutoGluon AND every manual
+    model small enough to ship with the app, so a genuine live comparison across
+    models is possible on whatever you upload — not just Chapter Four's own
+    fixed test set. Returns {model_name: probability_array}."""
+    result = {'AutoGluon': ag_predict(feat_df)}
+    if manual_models:
+        X_scaled = scaler.transform(feat_df[FEATURE_COLS].values)
+        for name, model in manual_models.items():
+            result[name] = model.predict_proba(X_scaled)[:, 1]
+    return result
 
 
 def compute_live_scorecard(y_true: np.ndarray, proba: np.ndarray) -> dict:
@@ -129,8 +154,11 @@ if 'has_uploaded' not in st.session_state:
     st.session_state.uploaded_feat_df = None      # engineered features + predictions
     st.session_state.uploaded_raw_df = None        # original uploaded rows (for behavioural averages)
     st.session_state.uploaded_summary = None       # dict of headline KPIs
-    st.session_state.uploaded_scorecard = None     # dict of precision/recall/etc, only if labels were present
+    st.session_state.uploaded_scorecard = None     # AutoGluon's scorecard, only if labels were present
     st.session_state.uploaded_has_labels = False
+    st.session_state.uploaded_model_probas = None  # {model_name: proba array}, every model, on your data
+    st.session_state.uploaded_scorecards = None    # {model_name: scorecard dict}, only if labels were present
+    st.session_state.uploaded_drift_check = None   # first-half vs second-half comparison, only if timestamp + enough data
 
 
 # -----------------------------------------------------------------------------
@@ -171,6 +199,9 @@ if st.session_state.has_uploaded and st.session_state.uploaded_summary is not No
         st.session_state.uploaded_summary = None
         st.session_state.uploaded_scorecard = None
         st.session_state.uploaded_has_labels = False
+        st.session_state.uploaded_model_probas = None
+        st.session_state.uploaded_scorecards = None
+        st.session_state.uploaded_drift_check = None
         st.rerun()
 else:
     st.sidebar.info('📌 No file uploaded yet this session. Upload one on the **Upload Dataset & Time-Series** '
@@ -181,16 +212,98 @@ else:
 # =============================================================================
 if page == '📊 Dashboard':
     st.title('IEAF Fraud Monitoring Dashboard — AutoGluon Edition v2')
-    st.caption(f"Live view — Active model: AutoGluon ({dashboard_metrics['ag_best_model']})")
+    st.caption(f"Active model: AutoGluon ({dashboard_metrics['ag_best_model']})")
 
+    has_session = st.session_state.has_uploaded and st.session_state.uploaded_summary is not None
+    speed_ratio = dashboard_metrics['ag_latency_p50_ms'] / dashboard_metrics['xgb_latency_p50_ms']
+
+    # -------------------------------------------------------------------------
+    # LIVE section: your uploaded data, shown FIRST and computed fresh every
+    # time this page loads. Everything here changes based on what you upload;
+    # nothing here is cached from Chapter Four.
+    # -------------------------------------------------------------------------
+    if has_session:
+        st.success(f"📌 Showing **live results for `{st.session_state.uploaded_filename}`** — "
+                     f"scored just now, on this page load, not cached.")
+        st.header('📌 Your Uploaded Data (This Session) — Live')
+        s = st.session_state.uploaded_summary
+        u1, u2, u3, u4 = st.columns(4)
+        u1.metric('Your transactions scored', f"{s['n_scored']:,}")
+        u2.metric('Flagged (review or decline)', f"{s['n_flagged']:,}", f"{100*s['n_flagged']/s['n_scored']:.2f}% of your traffic")
+        u3.metric('Recommended decline', f"{s['n_decline']:,}")
+        u4.metric('Highest fraud probability found', f"{s['max_proba']:.1%}",
+                   help='The median is almost always 0.0000 here, since most transactions get an exact-zero '
+                        'score — the highest score found is a more useful single number.')
+
+        if st.session_state.uploaded_has_labels:
+            sc = st.session_state.uploaded_scorecard
+            st.markdown(
+                f"**Live scorecard on your data** (real fraud labels were found in this file): "
+                f"Precision **{sc['precision']:.3f}**, Recall **{sc['recall']:.3f}**, "
+                f"F1 **{sc['f1']:.3f}**, PR-AUC **{sc['pr_auc']:.3f}**, MCC **{sc['mcc']:.3f}**."
+            )
+
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                st.subheader('PR-AUC on Your Data — Every Model Available')
+                scs = st.session_state.uploaded_scorecards
+                fig = go.Figure(go.Bar(
+                    x=list(scs.keys()), y=[v['pr_auc'] for v in scs.values()],
+                    marker_color=['#C44E52' if k == 'AutoGluon' else '#4C72B0' for k in scs.keys()],
+                    text=[f"{v['pr_auc']:.3f}" for v in scs.values()], textposition='outside',
+                ))
+                fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10), yaxis_title='PR-AUC (your data)')
+                st.plotly_chart(fig, width='stretch')
+                st.caption('RandomForest is not shown here — its saved model file is too large to ship with '
+                            'this app (25.7 MB, over GitHub\u2019s upload limit), so only its fixed Chapter Four '
+                            'score is available, not a live one on your data.')
+            with dc2:
+                st.subheader('Concept-Drift Check on Your Data')
+                dch = st.session_state.uploaded_drift_check
+                if dch is not None:
+                    drop_pct = 100 * dch['drop']
+                    tone = 'warning' if dch['drop'] > 0.1 else 'positive'
+                    st.markdown(
+                        f"- Recall on fraud, first half of your date range: **{dch['recall_first_half']:.1%}**\n"
+                        f"- Recall on fraud, second half: **{dch['recall_second_half']:.1%}**\n"
+                    )
+                    if dch['drop'] > 0.1:
+                        st.warning(f"⚠️ Recall dropped {drop_pct:.0f} percentage points between the first and "
+                                    f"second half of your date range — a possible sign of drift in your own data.")
+                    else:
+                        st.success(f"✅ Recall held steady across your date range (a {drop_pct:.0f}-point change) — "
+                                    f"no strong sign of drift in this file.")
+                else:
+                    st.caption('Needs a `timestamp` column and enough fraud cases in both halves of the date '
+                                'range to check — not available for this file.')
+        else:
+            st.info('Your file had no `is_fraud` column, so precision/recall, a live model comparison, and a '
+                     'drift check can\u2019t be computed — only prediction counts and probabilities above. '
+                     'Upload a labelled file (with `is_fraud`) to unlock those.')
+
+        st.markdown('---')
+        st.header('📚 Chapter Four Reference Benchmark (Fixed)')
+        st.caption(
+            'Everything below is the dissertation\u2019s own tested, historical results from Chapter Four — the '
+            'same regardless of what you upload. Shown here for comparison against your live results above.'
+        )
+    else:
+        st.info('💡 No file uploaded this session — showing the framework\u2019s own fixed Chapter Four results '
+                 'below. Upload a file on the **Upload Dataset & Time-Series** page, then return here for a '
+                 'live section computed from your own data instead.')
+
+    # -------------------------------------------------------------------------
+    # FIXED reference section: Chapter Four's own tested results. Identical
+    # regardless of what you upload — these describe how the framework itself
+    # was built and evaluated, not a property of your data.
+    # -------------------------------------------------------------------------
     k1, k2, k3, k4 = st.columns(4)
     k1.metric('Contemp. PR-AUC (AutoGluon)', f"{dashboard_metrics['ag_contemp_pr_auc']:.3f}", 'weighted ensemble')
     k2.metric('Best on Held-Out Test', dashboard_metrics['best_by_test'],
                f"{dashboard_metrics['leaderboard_test'][0]['score_test']:.3f} PR-AUC")
-    speed_ratio = dashboard_metrics['ag_latency_p50_ms'] / dashboard_metrics['xgb_latency_p50_ms']
     k3.metric('Median Latency (AutoGluon)', f"{dashboard_metrics['ag_latency_p50_ms']:.1f} ms",
                f"-{speed_ratio:.0f}x slower than XGBoost", delta_color='inverse')
-    k4.metric('Drift Status', 'Alert Raised', f"Day {dashboard_metrics['adwin_first_drift_day']:.0f}", delta_color='inverse')
+    k4.metric('Drift Status (Chapter Four\u2019s test)', 'Alert Raised', f"Day {dashboard_metrics['adwin_first_drift_day']:.0f}", delta_color='inverse')
 
     st.markdown('---')
     c1, c2 = st.columns(2)
@@ -248,39 +361,6 @@ if page == '📊 Dashboard':
             f"- ADWIN alert raised: Day {dashboard_metrics['adwin_first_drift_day']:.0f} "
             f"({dashboard_metrics['adwin_first_drift_day'] - dashboard_metrics['true_drift_day']:.0f}-day detection lag)"
         )
-
-    # -------------------------------------------------------------------------
-    # Live session section: only appears once a file has been uploaded. Kept
-    # clearly separate from the results above, which are the dissertation's own
-    # tested Chapter Four findings and do not change based on what you upload.
-    # -------------------------------------------------------------------------
-    if st.session_state.has_uploaded and st.session_state.uploaded_summary is not None:
-        st.markdown('---')
-        st.header('📌 Your Uploaded Data (This Session)')
-        st.caption(
-            f"From `{st.session_state.uploaded_filename}`, scored live with AutoGluon on the "
-            f"**Upload Dataset & Time-Series** page. The KPI cards above are Chapter Four's own "
-            f"tested results and do not change; these numbers are specific to your file."
-        )
-        s = st.session_state.uploaded_summary
-        u1, u2, u3, u4 = st.columns(4)
-        u1.metric('Your transactions scored', f"{s['n_scored']:,}")
-        u2.metric('Flagged (review or decline)', f"{s['n_flagged']:,}", f"{100*s['n_flagged']/s['n_scored']:.2f}% of your traffic")
-        u3.metric('Recommended decline', f"{s['n_decline']:,}")
-        u4.metric('Highest fraud probability found', f"{s['max_proba']:.1%}",
-                   help='The median is almost always 0.0000 here, since most transactions get an exact-zero '
-                        'score — the highest score found is a more useful single number.')
-
-        if st.session_state.uploaded_has_labels:
-            sc = st.session_state.uploaded_scorecard
-            st.markdown(
-                f"**Live scorecard on your data** (real fraud labels were found in this file): "
-                f"Precision **{sc['precision']:.3f}**, Recall **{sc['recall']:.3f}**, "
-                f"F1 **{sc['f1']:.3f}**, PR-AUC **{sc['pr_auc']:.3f}**, MCC **{sc['mcc']:.3f}**. "
-                f"See the **AutoML Selection & Scorecards** page for the full breakdown and confusion matrix."
-            )
-        else:
-            st.caption('Your file had no `is_fraud` column, so precision/recall cannot be computed — only counts and probabilities above.')
 
 # =============================================================================
 # PAGE 2: AUTOML SELECTION & SCORECARDS
@@ -362,23 +442,30 @@ elif page == '🤖 AutoML Selection & Scorecards':
         st.caption(f"Computed from `{st.session_state.uploaded_filename}`, using AutoGluon\u2019s predictions "
                     f"from the Upload Dataset & Time-Series page.")
         if st.session_state.uploaded_has_labels:
-            sc = st.session_state.uploaded_scorecard
-            live_df = pd.DataFrame([{
-                'Precision': sc['precision'], 'Recall': sc['recall'], 'F1': sc['f1'],
-                'ROC-AUC': sc['roc_auc'], 'PR-AUC': sc['pr_auc'], 'MCC': sc['mcc'], 'FPR (%)': 100 * sc['fpr'],
-            }], index=[st.session_state.uploaded_filename])
+            scs = st.session_state.uploaded_scorecards
+            live_rows = []
+            for name, sc in scs.items():
+                live_rows.append({'Model': name, 'Precision': sc['precision'], 'Recall': sc['recall'],
+                                    'F1': sc['f1'], 'ROC-AUC': sc['roc_auc'], 'PR-AUC': sc['pr_auc'],
+                                    'MCC': sc['mcc'], 'FPR (%)': 100 * sc['fpr']})
+            live_df = pd.DataFrame(live_rows).set_index('Model')
             st.dataframe(
                 live_df.style.background_gradient(subset=['PR-AUC', 'MCC', 'F1'], cmap='Greens')
                               .background_gradient(subset=['FPR (%)'], cmap='Reds')
                               .format('{:.3f}'),
                 width='stretch',
             )
-            cm = np.array([[sc['tn'], sc['fp']], [sc['fn'], sc['tp']]])
-            fig = go.Figure(go.Heatmap(z=cm, x=['Pred Legit', 'Pred Fraud'], y=['Actual Legit', 'Actual Fraud'],
-                                         colorscale='Purples', showscale=False, text=cm, texttemplate='%{text}'))
-            fig.update_layout(height=320, margin=dict(l=5, r=5, t=30, b=5),
-                                title=dict(text='Confusion Matrix — Your Data', font=dict(size=12)))
-            st.plotly_chart(fig, width='stretch')
+            st.caption('RandomForest is not included — its saved model file is too large to ship with this app '
+                        '(25.7 MB, over GitHub\u2019s upload limit), so it can\u2019t be re-run live on your data.')
+
+            st.subheader('Confusion Matrices — Your Data')
+            cm_cols = st.columns(len(scs))
+            for col, (name, sc) in zip(cm_cols, scs.items()):
+                cm = np.array([[sc['tn'], sc['fp']], [sc['fn'], sc['tp']]])
+                fig = go.Figure(go.Heatmap(z=cm, x=['Pred Legit', 'Pred Fraud'], y=['Actual Legit', 'Actual Fraud'],
+                                             colorscale='Purples', showscale=False, text=cm, texttemplate='%{text}'))
+                fig.update_layout(height=280, margin=dict(l=5, r=5, t=30, b=5), title=dict(text=name, font=dict(size=11)))
+                col.plotly_chart(fig, width='stretch')
             st.caption(
                 'This is a genuine, freshly-computed scorecard on the file you uploaded, using the same '
                 'formulas as Chapter Four, not the dissertation\u2019s own fixed results shown above.'
@@ -434,8 +521,9 @@ elif page == '📁 Upload Dataset & Time-Series':
                 st.stop()
             feat_df = raw_df.copy()
 
-        with st.spinner('Scoring transactions with AutoGluon...'):
-            proba = ag_predict(feat_df)
+        with st.spinner('Scoring transactions with AutoGluon and every comparison model available...'):
+            model_probas = score_with_all_models(feat_df)
+            proba = model_probas['AutoGluon']
         feat_df['fraud_probability'] = proba
         feat_df['decision'] = [decision_label(p) for p in proba]
 
@@ -453,13 +541,44 @@ elif page == '📁 Upload Dataset & Time-Series':
             'median_proba': float(np.median(proba)), 'mean_proba': float(np.mean(proba)),
             'max_proba': float(np.max(proba)),
         }
+        st.session_state.uploaded_model_probas = model_probas
+
         if 'is_fraud' in raw_df.columns and raw_df['is_fraud'].nunique() > 0:
+            y_true = raw_df['is_fraud'].astype(int).values
             st.session_state.uploaded_has_labels = True
-            st.session_state.uploaded_scorecard = compute_live_scorecard(
-                raw_df['is_fraud'].astype(int).values, proba)
+            st.session_state.uploaded_scorecard = compute_live_scorecard(y_true, proba)
+            # Same live scorecard, but for every model, not just AutoGluon — this is
+            # what makes a genuine "PR-AUC — All Candidate Models" chart on YOUR
+            # data possible, not just Chapter Four's own fixed test set.
+            st.session_state.uploaded_scorecards = {
+                name: compute_live_scorecard(y_true, p) for name, p in model_probas.items()
+            }
+            # A dependency-free drift check: does AutoGluon's recall on real fraud
+            # hold up in the second half of your date range vs the first half?
+            # (No new package needed — same idea as Chapter Four's ADWIN monitor,
+            # just computed directly rather than via a streaming detector.)
+            if 'timestamp' in raw_df.columns:
+                ts = pd.to_datetime(raw_df['timestamp'])
+                order = ts.values.argsort()
+                y_sorted, p_sorted = y_true[order], proba[order]
+                half = len(y_sorted) // 2
+                if half >= 5 and y_sorted[:half].sum() >= 1 and y_sorted[half:].sum() >= 1:
+                    pred_sorted = (p_sorted >= 0.5).astype(int)
+                    recall_first = float(((pred_sorted[:half] == 1) & (y_sorted[:half] == 1)).sum() / y_sorted[:half].sum())
+                    recall_second = float(((pred_sorted[half:] == 1) & (y_sorted[half:] == 1)).sum() / y_sorted[half:].sum())
+                    st.session_state.uploaded_drift_check = {
+                        'recall_first_half': recall_first, 'recall_second_half': recall_second,
+                        'drop': recall_first - recall_second,
+                    }
+                else:
+                    st.session_state.uploaded_drift_check = None
+            else:
+                st.session_state.uploaded_drift_check = None
         else:
             st.session_state.uploaded_has_labels = False
             st.session_state.uploaded_scorecard = None
+            st.session_state.uploaded_scorecards = None
+            st.session_state.uploaded_drift_check = None
 
         st.markdown('### Scoring Results (AutoGluon)')
         st.success(
@@ -829,8 +948,9 @@ elif page == '📋 Executive Summary & Insights':
 
     # ---------------------------------------------------------------- 6. Business Impact
     st.header('6. Business Impact')
-    bi_cols = st.columns(len(insights.build_business_impact()))
-    for col, item in zip(bi_cols, insights.build_business_impact()):
+    impact_items = insights.build_business_impact(has_session, session_summary, data_profile)
+    bi_cols = st.columns(len(impact_items))
+    for col, item in zip(bi_cols, impact_items):
         with col:
             st.markdown(f"**{item['icon']} {item['title']}**")
             st.caption(item['text'])
