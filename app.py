@@ -29,6 +29,7 @@ from sklearn.metrics import (precision_score, recall_score, f1_score, roc_auc_sc
                               average_precision_score, matthews_corrcoef, confusion_matrix, accuracy_score)
 
 from feature_engineering import engineer_features, engineer_single_transaction, FEATURE_COLS, RAW_REQUIRED_COLS
+import insights
 
 st.set_page_config(page_title='IEAF Fraud Monitoring — AutoGluon Edition', page_icon='🛡️', layout='wide')
 
@@ -102,6 +103,21 @@ def compute_live_scorecard(y_true: np.ndarray, proba: np.ndarray) -> dict:
     )
 
 
+TONE_COLORS = {'positive': ('#E8F5E9', '#2E7D32'), 'neutral': ('#FFF8E1', '#F9A825'), 'warning': ('#FDECEA', '#C62828')}
+
+
+def insight_card(icon: str, title: str, text: str, tone: str = 'neutral'):
+    bg, border = TONE_COLORS.get(tone, TONE_COLORS['neutral'])
+    st.markdown(
+        f"""<div style="background-color:{bg}; border-left: 5px solid {border}; border-radius: 6px;
+        padding: 14px 16px; margin-bottom: 12px;">
+        <div style="font-size: 15px; font-weight: 700; color: #222; margin-bottom: 4px;">{icon} {title}</div>
+        <div style="font-size: 14px; color: #333; line-height: 1.5;">{text}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
 # -----------------------------------------------------------------------------
 # Session state: this is what lets an uploaded file's results follow the user
 # across pages (Dashboard, Scorecards, Manual Prediction), instead of each page
@@ -127,6 +143,7 @@ page = st.sidebar.radio('Navigate', [
     '🤖 AutoML Selection & Scorecards',
     '📁 Upload Dataset & Time-Series',
     '✍️ Manual Prediction & Explainability',
+    '📋 Executive Summary & Insights',
     'ℹ️ About This App',
 ])
 st.sidebar.markdown('---')
@@ -635,9 +652,120 @@ elif page == '✍️ Manual Prediction & Explainability':
             st.dataframe(feat_row.T.rename(columns={0: 'value'}), width='stretch')
 
 # =============================================================================
-# PAGE 5: ABOUT
+# PAGE 5: EXECUTIVE SUMMARY & INSIGHTS
 # =============================================================================
-else:
+elif page == '📋 Executive Summary & Insights':
+    st.title('📋 Executive Summary & Insights')
+    st.caption(
+        'The decision-support layer of this app: what the numbers on the other pages actually mean, '
+        'written for both technical and non-technical readers. Every statement below traces back to a '
+        'real, computed result elsewhere in this app, not an invented narrative.'
+    )
+
+    has_session = st.session_state.has_uploaded and st.session_state.uploaded_summary is not None
+    session_summary = st.session_state.uploaded_summary if has_session else None
+    session_scorecard = st.session_state.uploaded_scorecard if has_session else None
+    session_has_labels = st.session_state.uploaded_has_labels if has_session else False
+
+    # ---------------------------------------------------------------- 1. Executive Summary
+    st.header('1. Executive Summary')
+    summary = insights.build_executive_summary(dashboard_metrics, ag_results, has_session, session_summary)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown('**The problem**')
+        st.write(summary['problem'])
+        st.markdown('**The data**')
+        st.write(summary['data'])
+    with c2:
+        st.markdown('**Overall outcome**')
+        st.write(summary['outcome'])
+    st.markdown('**Key findings**')
+    for f in summary['findings']:
+        st.markdown(f'- {f}')
+
+    st.markdown('---')
+
+    # ---------------------------------------------------------------- 2. Key Insights
+    st.header('2. Key Insights')
+    st.caption('Automatically generated from this app\u2019s own real results — not the raw numbers again, but what they mean.')
+    key_insights = insights.build_key_insights(
+        dashboard_metrics, ag_results, model_results, lb_summary, adwin_results,
+        has_session, session_summary, session_scorecard, session_has_labels,
+    )
+    for ins in key_insights:
+        insight_card(ins['icon'], ins['title'], ins['text'], ins['tone'])
+
+    st.markdown('---')
+
+    # ---------------------------------------------------------------- 3. Interpretation of Results
+    st.header('3. Interpretation of Results')
+    st.caption('What each major chart elsewhere in this app is actually showing, and why it matters.')
+    for interp in insights.build_interpretations(dashboard_metrics, ag_results, model_results):
+        with st.expander(f"📈 {interp['chart']}"):
+            st.write(interp['text'])
+
+    st.markdown('---')
+
+    # ---------------------------------------------------------------- 4. Recommendations
+    st.header('4. Recommendations')
+    for i, rec in enumerate(insights.build_recommendations(dashboard_metrics, ag_results), start=1):
+        with st.container(border=True):
+            st.markdown(f"**{i}. {rec['title']}**")
+            st.markdown(f"- **Evidence:** {rec['evidence']}")
+            st.markdown(f"- **Why:** {rec['rationale']}")
+            st.markdown(f"- **Expected benefit:** {rec['benefit']}")
+            st.markdown(f"- **Risk / assumption:** {rec['risk']}")
+
+    st.markdown('---')
+
+    # ---------------------------------------------------------------- 5. Confidence & Limitations
+    st.header('5. Confidence & Limitations')
+    cl = insights.build_confidence_limitations()
+    st.info(f"**Overall confidence:** {cl['confidence']}")
+    c3, c4 = st.columns(2)
+    with c3:
+        st.markdown('**✅ Strengths**')
+        for s in cl['strengths']:
+            st.markdown(f'- {s}')
+        st.markdown('**⚠️ Limitations**')
+        for l in cl['limitations']:
+            st.markdown(f'- {l}')
+    with c4:
+        st.markdown('**🎯 Potential sources of bias**')
+        for b in cl['biases']:
+            st.markdown(f'- {b}')
+        st.markdown('**📌 Assumptions made**')
+        for a in cl['assumptions']:
+            st.markdown(f'- {a}')
+
+    st.markdown('---')
+
+    # ---------------------------------------------------------------- 6. Business Impact
+    st.header('6. Business Impact')
+    bi_cols = st.columns(len(insights.build_business_impact()))
+    for col, item in zip(bi_cols, insights.build_business_impact()):
+        with col:
+            st.markdown(f"**{item['icon']} {item['title']}**")
+            st.caption(item['text'])
+
+    st.markdown('---')
+
+    # ---------------------------------------------------------------- 7. Next Steps
+    st.header('7. Next Steps')
+    for step in insights.build_next_steps():
+        st.markdown(f'- {step}')
+
+    if not has_session:
+        st.markdown('---')
+        st.info(
+            '💡 Upload a file on the **Upload Dataset & Time-Series** page, and this page will add live '
+            'insights specific to your own data, alongside the findings above.'
+        )
+
+# =============================================================================
+# PAGE 6: ABOUT
+# =============================================================================
+elif page == 'ℹ️ About This App':
     st.title('ℹ️ About This App')
     st.markdown(
         f"""
@@ -662,6 +790,10 @@ pipeline end to end rather than a single hand-picked model.
 - **Manual Prediction & Explainability** — score one transaction at a time and see a real SHAP
   explanation for AutoGluon's decision. If you've uploaded a file, the behavioural defaults (recent
   transaction counts, average amount) are pre-filled from your own data's averages.
+- **Executive Summary & Insights** — the decision-support layer: a plain-language executive summary,
+  automatically generated key insights, chart-by-chart interpretation, evidence-based recommendations,
+  an honest confidence-and-limitations section, business impact, and next steps. Written for both
+  technical and non-technical readers, and it gets richer once you've uploaded your own data.
 
 **How pages share data:** uploading a file on the Upload page saves its results to your browser
 session (not a database, and not shared with other visitors). The Dashboard, Scorecards, and Manual
