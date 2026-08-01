@@ -665,13 +665,38 @@ elif page == '📋 Executive Summary & Insights':
     st.caption(
         'The decision-support layer of this app: what the numbers on the other pages actually mean, '
         'written for both technical and non-technical readers. Every statement below traces back to a '
-        'real, computed result elsewhere in this app, not an invented narrative.'
+        'real, computed result, not an invented narrative.'
     )
 
     has_session = st.session_state.has_uploaded and st.session_state.uploaded_summary is not None
     session_summary = st.session_state.uploaded_summary if has_session else None
     session_scorecard = st.session_state.uploaded_scorecard if has_session else None
     session_has_labels = st.session_state.uploaded_has_labels if has_session else False
+
+    # Compute a fresh profile of whatever was actually uploaded — this is what
+    # makes the page genuinely reactive to your data, not just a couple of
+    # bolted-on numbers. Recomputed on every page load, never cached, so it is
+    # always current for whatever is in session right now.
+    data_profile = None
+    if has_session:
+        data_profile = insights.build_data_profile(
+            st.session_state.uploaded_raw_df, st.session_state.uploaded_feat_df,
+            st.session_state.uploaded_feat_df['fraud_probability'].values,
+            DECISION_THRESHOLDS['approve_below'], DECISION_THRESHOLDS['decline_above'],
+        )
+
+    if has_session:
+        st.success(
+            f"📌 Showing **live insights on `{st.session_state.uploaded_filename}`** "
+            f"({session_summary['n_scored']:,} transactions, scored just now). Chapter Four's own reference "
+            f"results are further down, clearly labelled, for comparison."
+        )
+    else:
+        st.info(
+            '💡 No file uploaded this session — showing this framework\u2019s own reference results from '
+            'Chapter Four below. Upload a file on the **Upload Dataset & Time-Series** page and revisit this '
+            'page for insights computed fresh from your own data instead.'
+        )
 
     # ---------------------------------------------------------------- 1. Executive Summary
     st.header('1. Executive Summary')
@@ -681,7 +706,11 @@ elif page == '📋 Executive Summary & Insights':
         st.markdown('**The problem**')
         st.write(summary['problem'])
         st.markdown('**The data**')
-        st.write(summary['data'])
+        if has_session:
+            st.write(f"This summary is built from `{st.session_state.uploaded_filename}`, "
+                      f"{session_summary['n_scored']:,} transactions you uploaded this session.")
+        else:
+            st.write(summary['data'])
     with c2:
         st.markdown('**Overall outcome**')
         st.write(summary['outcome'])
@@ -693,41 +722,93 @@ elif page == '📋 Executive Summary & Insights':
 
     # ---------------------------------------------------------------- 2. Key Insights
     st.header('2. Key Insights')
-    st.caption('Automatically generated from this app\u2019s own real results — not the raw numbers again, but what they mean.')
-    key_insights = insights.build_key_insights(
-        dashboard_metrics, ag_results, model_results, lb_summary, adwin_results,
-        has_session, session_summary, session_scorecard, session_has_labels,
-    )
-    for ins in key_insights:
-        insight_card(ins['icon'], ins['title'], ins['text'], ins['tone'])
+    if has_session:
+        st.caption(f"Computed fresh from `{st.session_state.uploaded_filename}` — not the dissertation's own results.")
+        data_insights = insights.build_data_key_insights(data_profile, session_scorecard, session_has_labels)
+        if data_insights:
+            for ins in data_insights:
+                insight_card(ins['icon'], ins['title'], ins['text'], ins['tone'])
+        else:
+            st.caption('Your uploaded file didn\u2019t have enough of the optional columns (merchant category, '
+                        'channel, amount, timestamp) to generate detailed pattern insights — only counts are available.')
+        with st.expander('📚 Also show Chapter Four\u2019s own reference insights'):
+            for ins in insights.build_key_insights(dashboard_metrics, ag_results, model_results, lb_summary,
+                                                      adwin_results, False, None, None, False):
+                insight_card(ins['icon'], ins['title'], ins['text'], ins['tone'])
+    else:
+        st.caption('Automatically generated from this app\u2019s own real Chapter Four results — not the raw numbers again, but what they mean.')
+        key_insights = insights.build_key_insights(
+            dashboard_metrics, ag_results, model_results, lb_summary, adwin_results,
+            has_session, session_summary, session_scorecard, session_has_labels,
+        )
+        for ins in key_insights:
+            insight_card(ins['icon'], ins['title'], ins['text'], ins['tone'])
 
     st.markdown('---')
 
     # ---------------------------------------------------------------- 3. Interpretation of Results
     st.header('3. Interpretation of Results')
-    st.caption('What each major chart elsewhere in this app is actually showing, and why it matters.')
-    for interp in insights.build_interpretations(dashboard_metrics, ag_results, model_results):
-        with st.expander(f"📈 {interp['chart']}"):
-            st.write(interp['text'])
+    if has_session:
+        st.caption('What the patterns found in your own uploaded data are actually showing.')
+        data_interps = insights.build_data_interpretations(data_profile)
+        if data_interps:
+            for interp in data_interps:
+                with st.expander(f"📈 {interp['chart']}"):
+                    st.write(interp['text'])
+        else:
+            st.caption('Not enough optional columns in your file to interpret category, channel, amount, or time patterns.')
+        with st.expander('📚 Also show interpretations of Chapter Four\u2019s own charts'):
+            for interp in insights.build_interpretations(dashboard_metrics, ag_results, model_results):
+                st.markdown(f"**{interp['chart']}**")
+                st.write(interp['text'])
+    else:
+        st.caption('What each major chart elsewhere in this app is actually showing, and why it matters.')
+        for interp in insights.build_interpretations(dashboard_metrics, ag_results, model_results):
+            with st.expander(f"📈 {interp['chart']}"):
+                st.write(interp['text'])
 
     st.markdown('---')
 
     # ---------------------------------------------------------------- 4. Recommendations
     st.header('4. Recommendations')
-    for i, rec in enumerate(insights.build_recommendations(dashboard_metrics, ag_results), start=1):
+    if has_session:
+        st.caption(f"Specific to what was found in `{st.session_state.uploaded_filename}`.")
+        recs = insights.build_data_recommendations(data_profile, session_summary)
+    else:
+        recs = insights.build_recommendations(dashboard_metrics, ag_results)
+    for i, rec in enumerate(recs, start=1):
         with st.container(border=True):
             st.markdown(f"**{i}. {rec['title']}**")
             st.markdown(f"- **Evidence:** {rec['evidence']}")
             st.markdown(f"- **Why:** {rec['rationale']}")
             st.markdown(f"- **Expected benefit:** {rec['benefit']}")
             st.markdown(f"- **Risk / assumption:** {rec['risk']}")
+    if has_session:
+        with st.expander('📚 Also show Chapter Four\u2019s own general recommendations'):
+            for i, rec in enumerate(insights.build_recommendations(dashboard_metrics, ag_results), start=1):
+                st.markdown(f"**{i}. {rec['title']}**")
+                st.markdown(f"- Evidence: {rec['evidence']}")
 
     st.markdown('---')
 
     # ---------------------------------------------------------------- 5. Confidence & Limitations
     st.header('5. Confidence & Limitations')
     cl = insights.build_confidence_limitations()
-    st.info(f"**Overall confidence:** {cl['confidence']}")
+    if has_session:
+        if session_has_labels:
+            st.success(
+                f"**Confidence on your data:** your file included real fraud labels, so the scorecard on it "
+                f"({session_scorecard['precision']:.3f} precision, {session_scorecard['recall']:.3f} recall) is a "
+                f"genuine, verified measurement, not a prediction taken on faith."
+            )
+        else:
+            st.warning(
+                '**Confidence on your data:** your file had no `is_fraud` column, so everything above is an '
+                'unverified model prediction — there is no way, from this file alone, to confirm how many '
+                'flagged transactions are genuinely fraud.'
+            )
+    else:
+        st.info(f"**Overall confidence:** {cl['confidence']}")
     c3, c4 = st.columns(2)
     with c3:
         st.markdown('**✅ Strengths**')
@@ -758,15 +839,13 @@ elif page == '📋 Executive Summary & Insights':
 
     # ---------------------------------------------------------------- 7. Next Steps
     st.header('7. Next Steps')
+    if has_session:
+        st.markdown(f"- Review the flagged transactions from `{st.session_state.uploaded_filename}` on the "
+                      f"**Upload Dataset & Time-Series** page, starting with the highest-probability ones.")
+        if not session_has_labels:
+            st.markdown('- Upload a version of this file with a real `is_fraud` column to get a verified scorecard instead of predictions alone.')
     for step in insights.build_next_steps():
         st.markdown(f'- {step}')
-
-    if not has_session:
-        st.markdown('---')
-        st.info(
-            '💡 Upload a file on the **Upload Dataset & Time-Series** page, and this page will add live '
-            'insights specific to your own data, alongside the findings above.'
-        )
 
 # =============================================================================
 # PAGE 6: ABOUT

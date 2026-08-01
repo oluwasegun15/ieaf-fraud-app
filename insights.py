@@ -255,6 +255,272 @@ def build_recommendations(dm, ag_results):
     ]
 
 
+def build_data_profile(raw_df, feat_df, proba, approve_below, decline_above):
+    """Computes real, fresh statistics from whatever file was just uploaded —
+    category/channel concentration, amount patterns, time patterns, and the
+    single riskiest transaction found. Returns None for anything the uploaded
+    file doesn't have the columns to support, rather than guessing."""
+    import numpy as np
+    import pandas as pd
+
+    decision = np.where(proba >= decline_above, 'Decline',
+                np.where(proba >= approve_below, 'Review', 'Approve'))
+    flagged_mask = proba >= approve_below
+
+    profile = {
+        'n_scored': len(proba), 'n_flagged': int(flagged_mask.sum()),
+        'category_breakdown': None, 'riskiest_category': None,
+        'channel_breakdown': None, 'riskiest_channel': None,
+        'amount_flagged_mean': None, 'amount_approved_mean': None,
+        'time_available': False, 'daily': None, 'trend_direction': None,
+        'riskiest_txn': None,
+    }
+
+    has_category = 'merchant_category' in raw_df.columns
+    has_channel = 'channel' in raw_df.columns
+    has_amount = 'amount' in raw_df.columns
+    has_time = 'timestamp' in raw_df.columns
+
+    if has_category:
+        cat_df = pd.DataFrame({'category': raw_df['merchant_category'].values, 'flagged': flagged_mask})
+        agg = cat_df.groupby('category')['flagged'].agg(['sum', 'count'])
+        agg['rate'] = 100 * agg['sum'] / agg['count']
+        agg = agg.sort_values('rate', ascending=False)
+        profile['category_breakdown'] = agg
+        if agg['sum'].sum() > 0:
+            profile['riskiest_category'] = {'name': agg.index[0], 'rate': float(agg['rate'].iloc[0]),
+                                              'count': int(agg['sum'].iloc[0])}
+
+    if has_channel:
+        chan_df = pd.DataFrame({'channel': raw_df['channel'].values, 'flagged': flagged_mask})
+        agg = chan_df.groupby('channel')['flagged'].agg(['sum', 'count'])
+        agg['rate'] = 100 * agg['sum'] / agg['count']
+        agg = agg.sort_values('rate', ascending=False)
+        profile['channel_breakdown'] = agg
+        if agg['sum'].sum() > 0:
+            profile['riskiest_channel'] = {'name': agg.index[0], 'rate': float(agg['rate'].iloc[0]),
+                                             'count': int(agg['sum'].iloc[0])}
+
+    if has_amount:
+        amt = raw_df['amount'].values
+        if flagged_mask.sum() > 0:
+            profile['amount_flagged_mean'] = float(amt[flagged_mask].mean())
+        if (~flagged_mask).sum() > 0:
+            profile['amount_approved_mean'] = float(amt[~flagged_mask].mean())
+
+    if has_time:
+        ts_df = pd.DataFrame({'timestamp': pd.to_datetime(raw_df['timestamp']), 'flagged': flagged_mask})
+        daily = ts_df.set_index('timestamp').resample('D')['flagged'].agg(['sum', 'count'])
+        daily = daily[daily['count'] > 0]
+        if len(daily) >= 4:
+            profile['time_available'] = True
+            profile['daily'] = daily
+            first_half = daily['sum'].iloc[:len(daily)//2].sum()
+            second_half = daily['sum'].iloc[len(daily)//2:].sum()
+            if second_half > first_half * 1.2:
+                profile['trend_direction'] = 'rising'
+            elif second_half < first_half * 0.8:
+                profile['trend_direction'] = 'falling'
+            else:
+                profile['trend_direction'] = 'stable'
+
+    if len(proba) > 0:
+        top_idx = int(np.argmax(proba))
+        txn = {'probability': float(proba[top_idx])}
+        for col in ['amount', 'merchant_category', 'channel', 'timestamp', 'account_id']:
+            if col in raw_df.columns:
+                txn[col] = raw_df.iloc[top_idx][col]
+        profile['riskiest_txn'] = txn
+
+    return profile
+
+
+def build_data_key_insights(profile, session_scorecard, session_has_labels):
+    """Insight cards computed fresh from the shape of the uploaded data itself —
+    not the dissertation's own results."""
+    insights = []
+
+    if profile['riskiest_txn'] is not None:
+        t = profile['riskiest_txn']
+        detail_bits = []
+        if 'amount' in t:
+            detail_bits.append(f"${t['amount']:,.2f}")
+        if 'merchant_category' in t:
+            detail_bits.append(str(t['merchant_category']))
+        if 'channel' in t:
+            detail_bits.append(f"via {t['channel']}")
+        detail = ', '.join(detail_bits) if detail_bits else 'transaction'
+        insights.append({
+            'icon': '🚨' if t['probability'] >= 0.8 else '🔎', 'tone': 'warning' if t['probability'] >= 0.8 else 'neutral',
+            'title': 'Riskiest transaction found in your upload',
+            'text': f"The single highest-scoring transaction in your file was scored {t['probability']:.1%} "
+                     f"fraud probability ({detail}). This is the first place to look if you're reviewing your "
+                     f"file manually."
+        })
+
+    if profile['riskiest_category'] is not None and profile['category_breakdown'] is not None:
+        rc = profile['riskiest_category']
+        n_cats = len(profile['category_breakdown'])
+        if rc['rate'] > 0:
+            insights.append({
+                'icon': '🏷️', 'tone': 'warning' if rc['rate'] >= 5 else 'neutral',
+                'title': 'One merchant category concentrates your flagged transactions',
+                'text': f"\u201c{rc['name']}\u201d has the highest flag rate in your file ({rc['rate']:.2f}% of its "
+                         f"transactions), out of {n_cats} categories present. If this looks unexpected for your "
+                         f"business, it's worth a closer look at that category specifically."
+            })
+
+    if profile['riskiest_channel'] is not None and profile['channel_breakdown'] is not None:
+        rch = profile['riskiest_channel']
+        if rch['rate'] > 0:
+            insights.append({
+                'icon': '📡', 'tone': 'warning' if rch['rate'] >= 5 else 'neutral',
+                'title': 'One payment channel stands out in your data',
+                'text': f"The \u201c{rch['name']}\u201d channel has the highest flag rate in your file "
+                         f"({rch['rate']:.2f}%). Channel-level concentration like this matched what Chapter Four "
+                         f"found in its own testing (ATM transactions carried the highest fraud rate there), so "
+                         f"this kind of pattern is a real, recurring signal worth monitoring by channel."
+            })
+
+    if profile['amount_flagged_mean'] is not None and profile['amount_approved_mean'] is not None:
+        fm, am = profile['amount_flagged_mean'], profile['amount_approved_mean']
+        if am > 0:
+            ratio = fm / am
+            if ratio >= 1.3:
+                insights.append({
+                    'icon': '💰', 'tone': 'neutral', 'title': 'Flagged transactions run larger than approved ones',
+                    'text': f"Transactions flagged in your file average ${fm:,.2f}, versus ${am:,.2f} for approved "
+                             f"ones — about {ratio:.1f}x larger. Larger, unusual amounts are a classic fraud tell, "
+                             f"and this pattern is consistent with that."
+                })
+            elif ratio <= 0.7:
+                insights.append({
+                    'icon': '💰', 'tone': 'neutral', 'title': 'Flagged transactions run smaller than approved ones',
+                    'text': f"Transactions flagged in your file average ${fm:,.2f}, versus ${am:,.2f} for approved "
+                             f"ones. Smaller flagged amounts can indicate low-value testing transactions, a "
+                             f"pattern sometimes used to probe a stolen card before a larger purchase."
+                })
+
+    if profile['time_available'] and profile['trend_direction'] is not None:
+        direction_text = {
+            'rising': ('📈', 'warning', 'Your flagged transactions are trending upward over the period uploaded',
+                       'the second half of your date range had noticeably more flagged transactions than the first half — worth checking whether something changed partway through.'),
+            'falling': ('📉', 'positive', 'Your flagged transactions are trending downward over the period uploaded',
+                        'the second half of your date range had noticeably fewer flagged transactions than the first half.'),
+            'stable': ('➡️', 'positive', 'Your flagged-transaction rate looks stable over the period uploaded',
+                       'no significant rise or fall in flagged transactions was found across the date range in your file.'),
+        }
+        icon, tone, title, detail = direction_text[profile['trend_direction']]
+        insights.append({'icon': icon, 'tone': tone, 'title': title, 'text': detail.capitalize()})
+
+    if session_has_labels and session_scorecard is not None:
+        insights.append({
+            'icon': '📊', 'tone': 'positive' if session_scorecard['pr_auc'] >= 0.6 else 'warning',
+            'title': 'Live accuracy check on your own labelled data',
+            'text': f"Because your file included real fraud labels, a genuine scorecard could be computed: "
+                     f"precision {session_scorecard['precision']:.3f}, recall {session_scorecard['recall']:.3f}, "
+                     f"PR-AUC {session_scorecard['pr_auc']:.3f}. This is the most direct evidence available "
+                     f"of how the model performs specifically on data like yours."
+        })
+    elif not session_has_labels:
+        insights.append({
+            'icon': 'ℹ️', 'tone': 'neutral', 'title': 'Accuracy on your data is unverified',
+            'text': 'Your file had no `is_fraud` column, so there is no way to check whether the flagged '
+                     'transactions above are genuinely fraud — these are model predictions, not confirmed outcomes. '
+                     'Upload a labelled file to get a real, verified scorecard instead of predictions alone.'
+        })
+
+    return insights
+
+
+def build_data_interpretations(profile):
+    """Chart-style interpretations of the patterns found in the uploaded data itself."""
+    interps = []
+    if profile['category_breakdown'] is not None:
+        interps.append({
+            'chart': 'Flag Rate by Merchant Category (your data)',
+            'text': (
+                'Ranks every merchant category in your file by what share of its transactions were flagged. '
+                'A category sitting well above the others is where a fraud team would look first — it either '
+                'means that category genuinely carries more risk in your business, or that your data in that '
+                'category looks unusual compared to what the model was trained on.'
+            )
+        })
+    if profile['channel_breakdown'] is not None:
+        interps.append({
+            'chart': 'Flag Rate by Payment Channel (your data)',
+            'text': (
+                'Shows which payment channel (ATM, POS, online, mobile) in your file has the highest share of '
+                'flagged transactions. Channel is one of the strongest, most consistent fraud signals found '
+                'throughout this project, so a spike in one channel here is worth taking seriously.'
+            )
+        })
+    if profile['time_available']:
+        interps.append({
+            'chart': 'Daily Flagged-Transaction Trend (your data)',
+            'text': (
+                'Plots how many transactions were flagged on each day in your file. A flat line suggests stable, '
+                'predictable risk; a rising line suggests something is actively changing in your traffic and is '
+                'worth investigating before it grows further, the same logic behind Chapter Four\u2019s concept-drift '
+                'monitor.'
+            )
+        })
+    if profile['amount_flagged_mean'] is not None:
+        interps.append({
+            'chart': 'Flagged vs. Approved Transaction Amounts (your data)',
+            'text': (
+                'Compares the average transaction size between what got flagged and what got approved in your '
+                'file. A large gap either way is informative: unusually large or unusually small amounts are '
+                'both classic, well-documented fraud patterns.'
+            )
+        })
+    return interps
+
+
+def build_data_recommendations(profile, session_summary):
+    recs = []
+    if profile['riskiest_txn'] is not None and profile['riskiest_txn']['probability'] >= 0.5:
+        t = profile['riskiest_txn']
+        recs.append({
+            'title': 'Manually review the highest-scoring transaction in your upload first',
+            'evidence': f"The riskiest transaction found was scored {t['probability']:.1%}.",
+            'rationale': 'Reviewing highest-risk items first makes the most of limited analyst time.',
+            'benefit': 'Catches the most likely genuine fraud case before lower-priority items.',
+            'risk': 'A high score is not certainty — this is a prediction, not a confirmed fraud finding.',
+        })
+    if profile['riskiest_category'] is not None and profile['riskiest_category']['rate'] >= 5:
+        rc = profile['riskiest_category']
+        recs.append({
+            'title': f"Investigate why \u201c{rc['name']}\u201d has an elevated flag rate in your data",
+            'evidence': f"{rc['rate']:.2f}% of \u201c{rc['name']}\u201d transactions were flagged, "
+                         f"the highest of any category in your file.",
+            'rationale': 'A single category driving most flags may point to a specific, addressable risk, '
+                          'or a data quality issue specific to that category.',
+            'benefit': 'A targeted fix (extra verification for that category, for example) is cheaper than a blanket policy change.',
+            'risk': 'Could also reflect how that category happens to be represented in this particular file, not a lasting pattern.',
+        })
+    if session_summary is not None:
+        flag_rate = 100 * session_summary['n_flagged'] / session_summary['n_scored'] if session_summary['n_scored'] else 0
+        if flag_rate > 5:
+            recs.append({
+                'title': 'Set aside dedicated review capacity for this upload',
+                'evidence': f"{flag_rate:.2f}% of {session_summary['n_scored']:,} transactions were flagged — "
+                             f"well above the roughly 0.2% base rate this framework expects.",
+                'rationale': 'An elevated flag rate at this scale needs planned reviewer time, not ad-hoc handling.',
+                'benefit': 'Avoids a backlog of unreviewed high-risk transactions.',
+                'risk': 'If the elevated rate turns out to be a data or model-fit issue rather than real risk, reviewer time would be better spent elsewhere.',
+            })
+    if not recs:
+        recs.append({
+            'title': 'No unusual concentration found — standard monitoring is sufficient for this upload',
+            'evidence': 'No single category, channel, or transaction stood out sharply from the rest in this file.',
+            'rationale': 'Recommendations are only useful when there is a real signal to act on.',
+            'benefit': 'Avoids manufacturing action items where the data does not support them.',
+            'risk': 'A quiet-looking file does not guarantee no fraud is present, only that nothing concentrated stood out to this model.',
+        })
+    return recs
+
+
 def build_confidence_limitations():
     return {
         'confidence': (

@@ -31,13 +31,17 @@ above.
 
 ## What's new in this version
 
-- **New page: Executive Summary & Insights.** Positioned right before About in the navigation, this is
-  the decision-support layer of the app: a plain-language executive summary, automatically-generated
-  key insights (colour-coded green/amber/red by tone), chart-by-chart interpretation, evidence-based
-  recommendations with stated risks, an honest confidence-and-limitations section, business impact,
-  and next steps. It reads the app's own real, already-computed results and interprets them — it does
-  not call any external AI service and adds no new dependencies, so it can't reintroduce the
-  deployment problems worked through below.
+- **New page: Executive Summary & Insights, now genuinely reactive to your uploaded data.** Positioned
+  right before About in the navigation. Every one of its 7 sections computes fresh statistics from
+  whatever you actually upload — the riskiest transaction found, which merchant category or channel
+  concentrates your flagged transactions, whether flagged amounts run larger or smaller than approved
+  ones, whether your flagged-transaction rate is trending up or down over the dates in your file, and
+  (if your file has real fraud labels) a genuine, verified accuracy scorecard on your own data. The
+  dissertation's own Chapter Four reference findings are still there too, clearly separated in
+  collapsible "Also show Chapter Four's own..." sections, so you can compare your data against the
+  framework's own tested baseline rather than losing that context. Nothing here calls an external AI
+  service — it's all real, threshold-and-template-based logic computed from the app's own numbers, so
+  it can't reintroduce the deployment problems documented below.
 - **Pages now talk to each other.** Upload a file on the Upload page, and its results follow you:
   - The **Dashboard** gains a "Your Uploaded Data (This Session)" section with live KPIs for your file, shown alongside (never replacing) the dissertation's own fixed Chapter Four results.
   - The **AutoML Selection & Scorecards** page gains a live scorecard (precision, recall, F1, PR-AUC, MCC, confusion matrix) computed on your file — but only if it includes an `is_fraud` column, since those metrics need to know which transactions were really fraud.
