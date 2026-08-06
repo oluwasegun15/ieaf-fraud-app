@@ -36,6 +36,30 @@ above.
 
 ## What's new in this version
 
+- **Plain-English explanations, not just a SHAP bar chart.** Every prediction — on the Manual
+  Prediction page, and now on the Upload page for any individual flagged transaction — leads with
+  color-coded reason cards written in plain language: "This happened far from where this customer
+  normally is" rather than `distance_from_home: 0.86`. The 17 raw model features are grouped into 8
+  human concepts (location, spending amount, time of day, payment channel, account activity,
+  time since last transaction, merchant type, day of week), ranked by real SHAP contribution, and
+  turned into sentences using the account's own real numbers (e.g. "$950, about 19x this account's
+  typical $50"). The technical SHAP bar chart is still there for a data-savvy reviewer, just moved
+  into a collapsed "See the technical SHAP breakdown" expander rather than being the headline.
+- **No AI agent, and deliberately so.** This is template-driven Python logic reading real,
+  already-computed SHAP values — not an external LLM narrating the data. That keeps it fast, free to
+  run, incapable of hallucinating a number that doesn't match the model, and unable to reintroduce
+  the deployment risk documented below. See Chapter Six, Section 6.4.4 (Executive Summary page) and
+  the equivalent reasoning for this feature for the full explanation of that choice.
+- **A real bug, caught by testing, not shipped.** Building the Upload page's "explain this flagged
+  transaction" feature surfaced a real crash: `engineer_features()` (used for CSV uploads) produced a
+  mix of `float64`, `int32`, `int64`, and `bool` columns across the 17 model features. AutoGluon and
+  the manual models tolerate that mix fine, but SHAP's numba-compiled masker cannot — it needs a
+  single uniform numeric dtype, and silently fails with an opaque Numba typing error otherwise. Fixed
+  by casting all model features to `float64` at the end of `engineer_features()`, the root cause, not
+  a workaround at the call site.
+
+## What's new in the version before this
+
 - **The Dashboard page is now genuinely live, and clearly labelled about what is and isn't.** Upload a
   file, and a "Your Uploaded Data (This Session) — Live" section now appears at the *top* of the
   Dashboard — computed fresh on every page load, not cached. It includes a real, live PR-AUC
@@ -58,9 +82,7 @@ above.
 - **The AutoML Selection & Scorecards page's live section now compares every available model** on
   your uploaded data (previously AutoGluon only), with matching confusion matrices.
 
-## What's new in the version before this
-
-- **New page: Executive Summary & Insights, now genuinely reactive to your uploaded data.** Positioned
+## What's new two versions back
   right before About in the navigation. Every one of its 7 sections computes fresh statistics from
   whatever you actually upload — the riskiest transaction found, which merchant category or channel
   concentrates your flagged transactions, whether flagged amounts run larger or smaller than approved

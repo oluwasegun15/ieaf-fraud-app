@@ -30,6 +30,7 @@ from sklearn.metrics import (precision_score, recall_score, f1_score, roc_auc_sc
 
 from feature_engineering import engineer_features, engineer_single_transaction, FEATURE_COLS, RAW_REQUIRED_COLS
 import insights
+import explainability
 
 st.set_page_config(page_title='IEAF Fraud Monitoring — AutoGluon Edition', page_icon='🛡️', layout='wide')
 
@@ -621,6 +622,42 @@ elif page == '📁 Upload Dataset & Time-Series':
         st.dataframe(flagged[display_cols].style.background_gradient(subset=['fraud_probability'], cmap='Reds'),
                      width='stretch', height=320)
 
+        if len(flagged) > 0:
+            st.markdown('#### 🔍 Explain One Flagged Transaction, in Plain English')
+            st.caption('Pick a flagged transaction below to see why it was flagged, in plain language — the same '
+                        'explanation style used on the Manual Prediction page. Computed on demand, only for the '
+                        'one transaction you pick, since a full explanation for every row would be slow.')
+            options = list(flagged.index)
+
+            def _fmt_option(i):
+                row = flagged.loc[i]
+                bits = [f"{row['fraud_probability']:.1%} risk"]
+                if 'amount' in row:
+                    bits.append(f"${row['amount']:,.2f}")
+                if 'merchant_category' in row:
+                    bits.append(str(row['merchant_category']))
+                return ' — '.join(bits)
+
+            picked = st.selectbox('Choose a flagged transaction', options, format_func=_fmt_option, key='explain_pick')
+            if st.button('Explain this transaction'):
+                with st.spinner('Working out the plain-English reasons...'):
+                    row_feats = feat_df.loc[[picked], FEATURE_COLS]
+                    row_proba = float(feat_df.loc[picked, 'fraud_probability'])
+                    background_row = row_feats.copy()
+                    background_row[FEATURE_COLS] = background_row[FEATURE_COLS] * 0
+                    try:
+                        def predict_fn_row(X):
+                            Xd = pd.DataFrame(X, columns=FEATURE_COLS)
+                            return predictor.predict_proba(Xd)[1].values
+                        expl = shap.explainers.Permutation(predict_fn_row, background_row, seed=0)
+                        sv_row = expl(row_feats, max_evals=60).values[0]
+                        tone = 'warning' if row_proba >= DECISION_THRESHOLDS['decline_above'] else 'neutral'
+                        reasons = explainability.build_plain_language_reasons(row_feats.iloc[0].to_dict(), sv_row, top_n=4)
+                        for r in reasons:
+                            insight_card(r['icon'], f"{r['label']} — {r['pct']:.0f}% of the reason", r['sentence'], tone)
+                    except Exception as e:
+                        st.warning(f'Explanation unavailable for this transaction ({e}).')
+
         csv_out = feat_df.to_csv(index=False).encode('utf-8')
         st.download_button('⬇️ Download full scored results as CSV', csv_out, 'ieaf_scored_transactions.csv', 'text/csv')
 
@@ -746,8 +783,8 @@ elif page == '✍️ Manual Prediction & Explainability':
             st.caption(f"Model used: `{predictor.model_best}` (AutoGluon\u2019s automatically-selected best model)")
 
         with r2:
-            st.markdown('#### Why this score? (SHAP, permutation explainer — same method as Chapter 4.7)')
-            with st.spinner('Computing explanation (AutoGluon\u2019s ensemble needs the slower, model-agnostic SHAP method)...'):
+            st.markdown('#### Why this score?')
+            with st.spinner('Working out the plain-English reasons for this score...'):
                 background = feat_row.copy()
                 background[FEATURE_COLS] = background[FEATURE_COLS] * 0  # zero baseline, fast fallback
                 try:
@@ -761,17 +798,36 @@ elif page == '✍️ Manual Prediction & Explainability':
                     st.warning(f'Explanation unavailable for this input ({e}).')
 
             if sv is not None:
-                order = np.argsort(np.abs(sv))[::-1][:8]
-                fig = go.Figure(go.Bar(
-                    x=[sv[i] for i in order][::-1],
-                    y=[FEATURE_COLS[i] for i in order][::-1],
-                    orientation='h',
-                    marker_color=['#C44E52' if sv[i] > 0 else '#4C72B0' for i in order][::-1],
-                ))
-                fig.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10),
-                                    xaxis_title='Contribution to fraud score (SHAP value)')
-                st.plotly_chart(fig, width='stretch')
-                st.caption('Red bars push the score toward fraud; blue bars push it toward legitimate.')
+                # Every reason card for one prediction shares the same tone, matching the
+                # overall decision — a "Decline" gets warning-red cards, an "Approve" gets
+                # calm-green ones. This avoids a confusing mismatch where an individual
+                # card's color contradicts what its own sentence actually says (a real risk
+                # if color were assigned per-feature instead, since several raw features can
+                # blend into one card and pull in different directions).
+                card_tone = 'warning' if proba >= DECISION_THRESHOLDS['decline_above'] else \
+                            'neutral' if proba >= DECISION_THRESHOLDS['approve_below'] else 'positive'
+                feature_row_dict = feat_row.iloc[0].to_dict()
+                reasons = explainability.build_plain_language_reasons(feature_row_dict, sv, top_n=4)
+                if reasons:
+                    for r in reasons:
+                        insight_card(r['icon'], f"{r['label']} — {r['pct']:.0f}% of the reason", r['sentence'], card_tone)
+                else:
+                    st.caption('No single factor stood out strongly for this transaction.')
+
+                with st.expander('🔬 See the technical SHAP breakdown (for a data-savvy reviewer)'):
+                    order = np.argsort(np.abs(sv))[::-1][:8]
+                    fig = go.Figure(go.Bar(
+                        x=[sv[i] for i in order][::-1],
+                        y=[FEATURE_COLS[i] for i in order][::-1],
+                        orientation='h',
+                        marker_color=['#C44E52' if sv[i] > 0 else '#4C72B0' for i in order][::-1],
+                    ))
+                    fig.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10),
+                                        xaxis_title='Contribution to fraud score (SHAP value)')
+                    st.plotly_chart(fig, width='stretch')
+                    st.caption('Red bars push the score toward fraud; blue bars push it toward legitimate. '
+                                'Computed with SHAP\u2019s permutation explainer, the same method used in Chapter 4.7, '
+                                'since AutoGluon\u2019s chosen model is a combined ensemble, not a single tree model.')
 
         with st.expander('View the exact feature values sent to the model'):
             st.dataframe(feat_row.T.rename(columns={0: 'value'}), width='stretch')

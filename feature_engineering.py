@@ -95,6 +95,16 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df['amount_mean_7d'] = df['amount_mean_7d'].fillna(df['amount'])
     df['amount_zscore_vs_7d'] = (df['amount'] - df['amount_mean_7d']) / (df['amount_std_7d'] + 1.0)
 
+    # Cast every model feature to a single, uniform numeric dtype. Without this,
+    # the columns end up as a mix of float64, int32, int64, and bool (bool for
+    # the one-hot channel flags, in particular), and while that mix is harmless
+    # for AutoGluon and the manual models, SHAP's numba-compiled masker cannot
+    # handle a dataframe whose .values array comes out as dtype=object, which
+    # is exactly what a mixed-dtype dataframe produces. This was a real bug,
+    # caught by testing the Upload page's "explain this transaction" feature
+    # against a real uploaded file, not a hypothetical one.
+    df[FEATURE_COLS] = df[FEATURE_COLS].astype('float64')
+
     return df
 
 
